@@ -1,1 +1,12 @@
-
+{
+    "template_name": "University Database",
+    "description": "Комплексная проверка базы данных университета",
+    "checks": [
+        "required_fields",
+        "duplicates",
+        "foreign_key",
+        "logical_rules",
+        "allowed_values",
+        "date_validation"
+    ]
+}
