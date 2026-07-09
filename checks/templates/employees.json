@@ -1,1 +1,12 @@
-
+{
+    "template_name": "Employees",
+    "description": "Шаблон проверки данных сотрудников",
+    "checks": [
+        "required_fields",
+        "duplicates",
+        "unique",
+        "regex_email",
+        "regex_phone",
+        "allowed_values"
+    ]
+}
