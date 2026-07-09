@@ -1,1 +1,7 @@
-
+{
+    "name": "Phone Validation",
+    "description": "Проверка телефона",
+    "type": "regex",
+    "column": "phone",
+    "pattern": "^\\+?[0-9]{11,12}$"
+}
