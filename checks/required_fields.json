@@ -1,1 +1,10 @@
-
+{
+    "name": "Required Fields",
+    "description": "Проверка обязательных полей",
+    "type": "required",
+    "columns": [
+        "id",
+        "full_name",
+        "email"
+    ]
+}
