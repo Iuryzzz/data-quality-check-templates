@@ -1,1 +1,6 @@
-
+{
+    "name": "Logical Rule",
+    "description": "Дата окончания должна быть позже даты начала",
+    "type": "logic",
+    "rule": "end_date > start_date"
+}
