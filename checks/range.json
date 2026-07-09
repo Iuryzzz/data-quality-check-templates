@@ -1,1 +1,8 @@
-
+{
+    "name": "Range Validation",
+    "description": "Проверка диапазона значений",
+    "type": "range",
+    "column": "age",
+    "min": 16,
+    "max": 100
+}
