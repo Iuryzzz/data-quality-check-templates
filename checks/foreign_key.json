@@ -1,1 +1,8 @@
-
+{
+    "name": "Foreign Key",
+    "description": "Проверка существования значения",
+    "type": "foreign_key",
+    "column": "group_id",
+    "reference_table": "groups",
+    "reference_column": "id"
+}
