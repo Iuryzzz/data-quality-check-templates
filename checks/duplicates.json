@@ -1,1 +1,8 @@
-
+{
+    "name": "Duplicate Records",
+    "description": "Поиск повторяющихся записей",
+    "type": "duplicates",
+    "columns": [
+        "id"
+    ]
+}
