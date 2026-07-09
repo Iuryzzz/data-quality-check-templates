@@ -1,1 +1,6 @@
-
+{
+    "name": "Unique Values",
+    "description": "Проверка уникальности значений",
+    "type": "unique",
+    "column": "student_number"
+}
