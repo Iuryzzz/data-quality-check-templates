@@ -1,1 +1,13 @@
-
+{
+    "template_name": "Students",
+    "description": "Шаблон проверки данных студентов",
+    "checks": [
+        "required_fields",
+        "duplicates",
+        "unique",
+        "regex_email",
+        "range",
+        "allowed_values",
+        "date_validation"
+    ]
+}
