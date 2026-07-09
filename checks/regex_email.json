@@ -1,1 +1,7 @@
-
+{
+    "name": "Email Validation",
+    "description": "Проверка формата email",
+    "type": "regex",
+    "column": "email",
+    "pattern": "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$"
+}
