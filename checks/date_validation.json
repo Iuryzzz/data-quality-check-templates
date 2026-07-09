@@ -1,1 +1,7 @@
-
+{
+    "name": "Date Validation",
+    "description": "Проверка даты",
+    "type": "date",
+    "column": "birth_date",
+    "format": "%Y-%m-%d"
+}
