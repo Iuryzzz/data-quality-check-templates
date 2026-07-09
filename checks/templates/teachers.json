@@ -1,1 +1,11 @@
-
+{
+    "template_name": "Teachers",
+    "description": "Шаблон проверки данных преподавателей",
+    "checks": [
+        "required_fields",
+        "duplicates",
+        "regex_email",
+        "regex_phone",
+        "date_validation"
+    ]
+}
