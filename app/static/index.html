@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Quality Check</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="container header-inner">
+            <div class="logo">
+                <h1>Data Quality Check</h1>
+                <span class="version">v2.2</span>
+            </div>
+            <nav id="nav">
+                <button data-tab="upload" class="tab active">Загрузка</button>
+                <button data-tab="files" class="tab">Файлы</button>
+                <button data-tab="smart" class="tab">Умный анализ</button>
+                <button data-tab="analysis" class="tab">Отчёты</button>
+                <button data-tab="templates" class="tab">Шаблоны</button>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Загрузка -->
+        <section id="tab-upload" class="tab-content active">
+            <h2>Загрузка файла</h2>
+            <div class="card">
+                <p class="hint">Поддерживаются: CSV, JSON, SQLite (.db)</p>
+                <form id="upload-form">
+                    <input type="file" id="file-input" accept=".csv,.json,.db,.sqlite,.sqlite3" required>
+                    <label>Шаблон проверок (необязательно)
+                        <select id="upload-template-select">
+                            <option value="">— без проверки —</option>
+                        </select>
+                    </label>
+                    <button type="submit" class="btn primary">Загрузить и проанализировать</button>
+                </form>
+                <div id="upload-status" class="status"></div>
+            </div>
+        </section>
+
+        <!-- Файлы -->
+        <section id="tab-files" class="tab-content">
+            <h2>Недавние файлы</h2>
+            <div class="toolbar">
+                <select id="filter-type">
+                    <option value="all">Все типы</option>
+                    <option value="csv">CSV</option>
+                    <option value="json">JSON</option>
+                    <option value="db">SQLite</option>
+                </select>
+                <button id="refresh-files" class="btn">Обновить</button>
+            </div>
+            <div id="stats-bar" class="stats-bar"></div>
+            <div id="files-list" class="list"></div>
+        </section>
+
+        <!-- УМНЫЙ АНАЛИЗ -->
+        <section id="tab-smart" class="tab-content">
+            <h2>Умный анализ данных</h2>
+            <div class="card" id="smart-empty">
+                <p class="hint">Выберите файл для умного анализа.</p>
+                <div class="inline-form">
+                    <select id="smart-file-select"><option value="">— выберите файл —</option></select>
+                    <button id="run-smart-btn" class="btn primary">Запустить умный анализ</button>
+                </div>
+            </div>
+
+            <div id="smart-result" class="hidden">
+                <div class="metrics-grid" id="smart-metrics"></div>
+                <div class="card"><h3>Рекомендации</h3><div id="recommendations-list" class="rec-list"></div></div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Действия по очистке</h3>
+                        <div class="card-actions">
+                            <button id="apply-all-btn" class="btn primary">Применить все</button>
+                            <button id="apply-selected-btn" class="btn">Применить выбранные</button>
+                        </div>
+                    </div>
+                    <div id="cleaning-actions" class="actions-list"></div>
+                </div>
+                <div id="cleaning-result" class="card hidden">
+                    <h3>Очистка завершена</h3>
+                    <div id="cleaning-stats" class="cleaning-stats"></div>
+                    <a id="download-cleaned-btn" class="btn primary" style="text-align:center; text-decoration:none; display:inline-block; margin-top:10px;">
+                        Скачать очищенный CSV
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <!-- Отчёты -->
+        <section id="tab-analysis" class="tab-content">
+            <h2>Результаты анализа</h2>
+            <div class="card" id="analysis-empty">
+                <p class="hint">Выберите файл из списка или введите ID задачи.</p>
+                <div class="inline-form">
+                    <input type="text" id="task-id-input" placeholder="Введите task_id">
+                    <button id="load-task-btn" class="btn">Загрузить отчёт</button>
+                </div>
+            </div>
+            <div id="analysis-result" class="hidden">
+                <div class="card" style="display:flex; justify-content:flex-end; margin-bottom:12px;">
+                    <a id="download-pdf-btn" class="btn primary" style="text-decoration:none;">
+                        Скачать PDF-отчёт
+                    </a>
+                </div>
+                <div class="metrics-grid" id="metrics-grid"></div>
+                <div class="card"><h3>Детали по колонкам</h3><div id="columns-details"></div></div>
+                <div class="card"><h3>Выбросы</h3><div id="outliers-details"></div></div>
+                <div class="card"><h3>Корреляции</h3><div id="correlations-details"></div></div>
+                <div class="card"><h3>Рекомендации</h3><ul id="recommendations-list-old" class="rec-list"></ul></div>
+                <div class="card" id="validation-card" style="display:none">
+                    <h3>Проверки по шаблону</h3>
+                    <div id="validation-summary" class="val-summary"></div>
+                    <table id="validation-table" class="table">
+                        <thead><tr><th>Статус</th><th>Тип</th><th>Название</th><th>Сообщение</th></tr></thead>
+                        <tbody id="validation-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Шаблоны (Аккордеон) -->
+        <section id="tab-templates" class="tab-content">
+            <h2>Шаблоны проверок</h2>
+            <div class="card">
+                <h3>Создать новый шаблон</h3>
+                <form id="template-form">
+                    <label>Название <input type="text" id="tpl-name" required placeholder="Например: students_v1"></label>
+                    <label>Описание <input type="text" id="tpl-desc" placeholder="Проверка данных студентов"></label>
+                    <label>Включить проверки:
+                        <select id="tpl-rules" multiple size="6"></select>
+                    </label>
+                    <button type="submit" class="btn primary">Создать шаблон</button>
+                </form>
+                <div id="template-status" class="status"></div>
+            </div>
+            <div class="card">
+                <h3>Существующие шаблоны</h3>
+                <div id="templates-catalog" class="accordion-list"></div>
+            </div>
+        </section>
+    </main>
+
+    <footer><div class="container"><span>Data Quality Check · v2.2</span></div></footer>
+
+    <!-- ШАБЛОНЫ ДЛЯ JS -->
+    <template id="tpl-file-item">
+        <div class="list-item">
+            <div class="item-main"><div class="name"></div><div class="meta"></div></div>
+            <div class="item-actions">
+                <select class="template-select"><option value="">— без шаблона —</option></select>
+                <button class="btn analyze-btn">Анализ →</button>
+                <button class="btn smart-btn">Умный →</button>
+            </div>
+        </div>
+    </template>
+    <template id="tpl-metric"><div class="metric"><div class="value"></div><div class="label"></div></div></template>
+    <template id="tpl-recommendation">
+        <div class="recommendation-item">
+            <div class="rec-header">
+                <span class="rec-type"></span><span class="rec-column"></span><span class="rec-confidence"></span>
+            </div>
+            <div class="rec-body"><div class="rec-issue"></div><div class="rec-action"></div></div>
+        </div>
+    </template>
+    <template id="tpl-cleaning-action">
+        <div class="action-item">
+            <div class="action-checkbox"><input type="checkbox" class="action-check"></div>
+            <div class="action-content">
+                <div class="action-header"><span class="action-type"></span><span class="action-priority"></span></div>
+                <div class="action-desc"></div>
+                <div class="action-meta"><span class="action-rows"></span></div>
+            </div>
+        </div>
+    </template>
+    <template id="tpl-col-row">
+        <tr><td class="col-name"></td><td><span class="badge type col-type"></span></td><td class="col-nulls"></td><td class="col-nulls-pct"></td><td class="col-unique"></td></tr>
+    </template>
+    <template id="tpl-outlier-row">
+        <tr><td class="out-col"></td><td class="out-count"></td><td class="out-pct"></td><td class="out-range"></td></tr>
+    </template>
+    <template id="tpl-corr-row">
+        <tr><td class="corr-c1"></td><td class="corr-c2"></td><td class="corr-val"></td><td><span class="badge type corr-type"></span></td></tr>
+    </template>
+    <template id="tpl-rec-item"><li class="rec-text"></li></template>
+    <template id="tpl-val-row">
+        <tr><td><span class="badge val-status"></span></td><td class="val-type"></td><td class="val-name"></td><td class="val-msg"></td></tr>
+    </template>
+    <template id="tpl-template-accordion">
+        <details class="accordion">
+            <summary><span class="accordion-title"></span><span class="accordion-badge"></span></summary>
+            <div class="accordion-content">
+                <p class="accordion-desc"></p>
+                <div class="checks-list"></div>
+                <div class="item-actions" style="margin-top:12px; justify-content:flex-end;">
+                    <button class="btn danger delete-tpl-btn">Удалить</button>
+                </div>
+            </div>
+        </details>
+    </template>
+    <template id="tpl-available-check">
+        <div class="list-item">
+            <div class="item-main"><div class="name"></div><div class="meta"></div></div>
+            <span class="badge type check-type"></span>
+        </div>
+    </template>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

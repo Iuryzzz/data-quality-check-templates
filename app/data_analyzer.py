@@ -1,14 +1,15 @@
 import pandas as pd
 import numpy as np
 from scipy import stats
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 import json
 import warnings
 import os
+import re
 
 from app.schemas import EDAReport, ColumnStat, CorrelationInfo, OutlierInfo, NumericStats, CheckResult, \
-    TemplateValidationReport
+    TemplateValidationReport, SmartRecommendation, CleaningAction
 
 warnings.filterwarnings('ignore')
 
@@ -1017,3 +1018,324 @@ class TemplateValidator:
             error_count=int(count),
             error_rows=rows[:100]
         )
+
+
+
+
+class SmartTemplateAnalyzer:
+    """Автоматический анализ данных и генерация рекомендаций"""
+
+    def __init__(self, df: pd.DataFrame):
+        self.df = df.copy()
+        self.original_df = df.copy()
+        self.recommendations: List[SmartRecommendation] = []
+        self.cleaning_actions: List[CleaningAction] = []
+
+    def analyze(self) -> Dict[str, Any]:
+        """Полный анализ с генерацией рекомендаций"""
+        detected_types = self._detect_column_types()
+
+        # Анализ пропусков
+        self._analyze_missing_values(detected_types)
+
+        # Анализ дубликатов
+        self._analyze_duplicates()
+
+        # Анализ выбросов
+        self._analyze_outliers(detected_types)
+
+        # Анализ форматов (email, phone, dates)
+        self._analyze_formats(detected_types)
+
+        return {
+            "detected_types": detected_types,
+            "recommendations": [r.dict() for r in self.recommendations],
+            "cleaning_actions": [a.dict() for a in self.cleaning_actions],
+            "estimated_impact": self._calculate_impact()
+        }
+
+    def _detect_column_types(self) -> Dict[str, str]:
+        """Определяет типы колонок: numeric, date, email, phone, categorical, text"""
+        types = {}
+
+        for col in self.df.columns:
+            sample = self.df[col].dropna().head(100)
+
+            # Проверка на email
+            if self._is_email_column(sample):
+                types[col] = "email"
+                continue
+
+            # Проверка на телефон
+            if self._is_phone_column(sample):
+                types[col] = "phone"
+                continue
+
+            # Проверка на дату
+            if self._is_date_column(sample):
+                types[col] = "date"
+                continue
+
+            # Проверка на число
+            if pd.api.types.is_numeric_dtype(self.df[col]):
+                types[col] = "numeric"
+                continue
+
+            # Попытка преобразовать в число
+            try:
+                pd.to_numeric(sample, errors='raise')
+                types[col] = "numeric"
+                continue
+            except:
+                pass
+
+            # Проверка на категорию
+            if self.df[col].nunique() < len(self.df) * 0.1:
+                types[col] = "categorical"
+                continue
+
+            types[col] = "text"
+
+        return types
+
+    def _is_email_column(self, sample: pd.Series) -> bool:
+        """Проверяет, содержит ли колонка email"""
+        email_pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+        valid_count = sum(1 for v in sample if isinstance(v, str) and re.match(email_pattern, v))
+        return valid_count > len(sample) * 0.8
+
+    def _is_phone_column(self, sample: pd.Series) -> bool:
+        """Проверяет, содержит ли колонка телефоны"""
+        phone_pattern = r'^\+?[0-9\s\-\(\)]{10,15}$'
+        valid_count = sum(1 for v in sample if isinstance(v, str) and re.match(phone_pattern, v))
+        return valid_count > len(sample) * 0.8
+
+    def _is_date_column(self, sample: pd.Series) -> bool:
+        """Проверяет, содержит ли колонка даты"""
+        date_formats = ['%Y-%m-%d', '%d.%m.%Y', '%d/%m/%Y', '%Y/%m/%d']
+        for fmt in date_formats:
+            try:
+                pd.to_datetime(sample, format=fmt, errors='raise')
+                return True
+            except:
+                continue
+        return False
+
+    def _analyze_missing_values(self, detected_types: Dict[str, str]):
+        """Анализирует пропуски и предлагает заполнение"""
+        missing = self.df.isnull().sum()
+
+        for col in self.df.columns:
+            if missing[col] == 0:
+                continue
+
+            missing_pct = (missing[col] / len(self.df)) * 100
+            col_type = detected_types.get(col, "text")
+
+            if col_type == "numeric":
+                # Безопасное вычисление медианы
+                numeric_col = pd.to_numeric(self.df[col], errors='coerce')
+                fill_value = float(numeric_col.median()) if not pd.isna(numeric_col.median()) else 0.0
+
+                action = CleaningAction(
+                    action_type="fill_missing",
+                    description=f"Заполнить пропуски медианой ({fill_value:.2f})",
+                    column=col,
+                    value=fill_value,
+                    affected_rows=int(missing[col]),
+                    priority="high" if missing_pct > 10 else "medium"
+                )
+            elif col_type == "categorical":
+                mode_val = self.df[col].mode()
+                fill_value = str(mode_val[0]) if not mode_val.empty else "unknown"
+
+                action = CleaningAction(
+                    action_type="fill_missing",
+                    description=f"Заполнить пропуски модой ({fill_value})",
+                    column=col,
+                    value=fill_value,
+                    affected_rows=int(missing[col]),
+                    priority="high" if missing_pct > 10 else "medium"
+                )
+            else:
+                action = CleaningAction(
+                    action_type="fill_missing",
+                    description=f"Заполнить пропуски значением 'unknown'",
+                    column=col,
+                    value="unknown",
+                    affected_rows=int(missing[col]),
+                    priority="low"
+                )
+
+            self.cleaning_actions.append(action)
+
+            self.recommendations.append(SmartRecommendation(
+                check_type="missing_values",
+                column=col,
+                detected_type=col_type,
+                issue=f"Пропусков: {int(missing[col])} ({missing_pct:.1f}%)",
+                suggested_action=action,
+                confidence=0.9 if col_type in ["numeric", "categorical"] else 0.7
+            ))
+
+    def _analyze_duplicates(self):
+        """Анализирует дубликаты"""
+        duplicates_mask = self.df.duplicated()
+        duplicate_count = duplicates_mask.sum()
+
+        if duplicate_count > 0:
+            duplicate_pct = (duplicate_count / len(self.df)) * 100
+
+            action = CleaningAction(
+                action_type="remove_duplicates",
+                description=f"Удалить {duplicate_count} дублирующихся строк",
+                column=None,
+                value=None,
+                affected_rows=int(duplicate_count),
+                priority="high" if duplicate_pct > 5 else "medium"
+            )
+            self.cleaning_actions.append(action)
+
+            self.recommendations.append(SmartRecommendation(
+                check_type="duplicates",
+                column="all",
+                detected_type="all",
+                issue=f"Дубликатов: {duplicate_count} ({duplicate_pct:.1f}%)",
+                suggested_action=action,
+                confidence=1.0
+            ))
+
+    def _analyze_outliers(self, detected_types: Dict[str, str]):
+        """Анализирует выбросы в числовых колонках"""
+        for col in self.df.columns:
+            if detected_types.get(col) != "numeric":
+                continue
+
+            clean_data = pd.to_numeric(self.df[col], errors='coerce').dropna()
+
+            if len(clean_data) < 10:
+                continue
+
+            Q1 = clean_data.quantile(0.25)
+            Q3 = clean_data.quantile(0.75)
+            IQR = Q3 - Q1
+
+            if IQR == 0:
+                continue
+
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+
+            outliers = clean_data[(clean_data < lower_bound) | (clean_data > upper_bound)]
+
+            if len(outliers) > 0:
+                outlier_pct = (len(outliers) / len(clean_data)) * 100
+
+                action = CleaningAction(
+                    action_type="remove_outliers",
+                    description=f"Удалить {len(outliers)} выбросов (за пределами [{lower_bound:.2f}, {upper_bound:.2f}])",
+                    column=col,
+                    value={"lower": float(lower_bound), "upper": float(upper_bound)},
+                    affected_rows=int(len(outliers)),
+                    priority="medium" if outlier_pct < 5 else "high"
+                )
+                self.cleaning_actions.append(action)
+
+                self.recommendations.append(SmartRecommendation(
+                    check_type="outliers",
+                    column=col,
+                    detected_type="numeric",
+                    issue=f"Выбросов: {len(outliers)} ({outlier_pct:.1f}%)",
+                    suggested_action=action,
+                    confidence=0.85
+                ))
+
+    def _analyze_formats(self, detected_types: Dict[str, str]):
+        """Анализирует форматы (email, phone, dates)"""
+        for col in self.df.columns:
+            col_type = detected_types[col]
+
+            if col_type == "email":
+                email_pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+                invalid = self.df[col].dropna().apply(lambda x: not re.match(email_pattern, str(x)))
+                invalid_count = invalid.sum()
+
+                if invalid_count > 0:
+                    self.recommendations.append(SmartRecommendation(
+                        check_type="format",
+                        column=col,
+                        detected_type="email",
+                        issue=f"Невалидных email: {invalid_count}",
+                        suggested_action=CleaningAction(
+                            action_type="flag_invalid",
+                            description=f"Пометить {invalid_count} невалидных email",
+                            column=col,
+                            value=None,
+                            affected_rows=int(invalid_count),
+                            priority="medium"
+                        ),
+                        confidence=0.95
+                    ))
+
+            elif col_type == "phone":
+                phone_pattern = r'^\+?[0-9\s\-\(\)]{10,15}$'
+                invalid = self.df[col].dropna().apply(lambda x: not re.match(phone_pattern, str(x)))
+                invalid_count = invalid.sum()
+
+                if invalid_count > 0:
+                    self.recommendations.append(SmartRecommendation(
+                        check_type="format",
+                        column=col,
+                        detected_type="phone",
+                        issue=f"Невалидных телефонов: {invalid_count}",
+                        suggested_action=CleaningAction(
+                            action_type="flag_invalid",
+                            description=f"Пометить {invalid_count} невалидных телефонов",
+                            column=col,
+                            value=None,
+                            affected_rows=int(invalid_count),
+                            priority="medium"
+                        ),
+                        confidence=0.9
+                    ))
+
+    def _calculate_impact(self) -> str:
+        """Оценивает общий impacto очистки"""
+        total_affected = sum(a.affected_rows for a in self.cleaning_actions)
+        impact_pct = (total_affected / (len(self.df) * len(self.df.columns))) * 100
+
+        if impact_pct > 20:
+            return "high"
+        elif impact_pct > 5:
+            return "medium"
+        else:
+            return "low"
+
+    def apply_cleaning(self, actions: List[Dict[str, Any]]) -> pd.DataFrame:
+        """Применяет выбранные действия по очистке"""
+        df = self.df.copy()
+
+        for action_data in actions:
+            action_type = action_data["action_type"]
+            column = action_data.get("column")
+            value = action_data.get("value")
+
+            if action_type == "remove_duplicates":
+                df = df.drop_duplicates()
+
+            elif action_type == "fill_missing":
+                if column and value is not None:
+                    df[column] = df[column].fillna(value)
+
+            elif action_type == "remove_outliers":
+                if column and isinstance(value, dict):
+                    lower = value.get("lower")
+                    upper = value.get("upper")
+                    if lower is not None and upper is not None:
+                        numeric_col = pd.to_numeric(df[column], errors='coerce')
+
+                        mask = (numeric_col >= lower) & (numeric_col <= upper)
+
+                        df = df[mask]
+
+        return df

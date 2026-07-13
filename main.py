@@ -1,52 +1,77 @@
+# main.py
+import uvicorn
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from starlette.staticfiles import StaticFiles
+
 from config.db_config import DBConnectionConfig
-from app.db_connector import DBConnectorService, BatchDispatcher
-from app.data_analyzer import DataQualityAnalyzer, TemplateValidator
+from app.db_connector import DBConnectorService
+from app.router import router  # ✅ импортируем router, а не app
 
-config = DBConnectionConfig.from_yaml("config/db_config.yaml")
-print("Конфигурация загружена")
+# Глобальная переменная — будет доступна из роутеров
+db_connector: DBConnectorService | None = None
 
-db = DBConnectorService(config)
-if not db.test_connection():
-    exit(1)
-print("Подключение к общей БД успешно!")
-print("Таблицы в базе:", db.list_tables())
 
-engine = db.get_engine()
-dispatcher = BatchDispatcher()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Вызывается ОДИН РАЗ при старте сервера"""
+    global db_connector
 
-if "students" in db.list_tables():
-    for df in dispatcher.load_table_batches(engine, "students"):
-        print(f"\nНачинаю анализ {len(df)} строк...")
-        
-        analyzer = DataQualityAnalyzer(df)
-        eda_report = analyzer.export_results("pydantic")
-        print("\nОбщий анализ готов:")
-        print(f"  Всего строк: {eda_report.total_rows}")
-        print(f"  Пропусков: {eda_report.total_missing} ({eda_report.missing_percentage}%)")
-        print(f"  Дубликатов: {eda_report.duplicate_count}")
-        print(f"  Выбросов: {eda_report.total_outliers}")
-        
-        validator = TemplateValidator(df)
-        val_report = validator.validate_by_template("students")
-        print(f"\nПроверка по шаблону '{val_report.template_name}':")
-        print(f"  Описание: {val_report.description}")
-        print(f"  Всего проверок: {val_report.total_checks}")
-        print(f"  Пройдено: {val_report.passed} | Ошибок: {val_report.failed} | Предупреждений: {val_report.warnings}")
-        
-        # Вывод таблицы с доступом к атрибутам объекта
-        print("\n" + "-" * 110)
-        print(f"{'Статус':<10} {'Тип проверки':<20} {'Название':<25} {'Сообщение'}")
-        print("-" * 110)
-        
-        for res in val_report.results:
-            status = res.status
-            check_type = res.check_type
-            check_name = res.check_name
-            message = res.message
-            print(f"{status:<10} {check_type:<20} {check_name:<25} {message}")
-        
-        print("-" * 110)
-else:
-    print("\nТаблица 'students' не найдена в базе данных")
+    print("=" * 60)
+    print("Запуск сервера Data Quality Check...")
+    print("=" * 60)
 
-print("\nРабота завершена!")
+    # Инициализация БД
+    try:
+        config = DBConnectionConfig.from_yaml("config/db_config.yaml")
+        print("✓ Конфигурация БД загружена")
+
+        db_connector = DBConnectorService(config)
+        if db_connector.test_connection():
+            print("✓ Подключение к PostgreSQL успешно!")
+            tables = db_connector.list_tables()
+            print(f"✓ Доступно таблиц: {len(tables)}")
+            if tables:
+                print(f"  Таблицы: {', '.join(tables[:5])}{'...' if len(tables) > 5 else ''}")
+        else:
+            print("⚠ Не удалось подключиться к БД. Функционал БД будет недоступен.")
+            db_connector = None
+    except FileNotFoundError:
+        print("⚠ Файл config/db_config.yaml не найден. БД не подключена.")
+        db_connector = None
+    except Exception as e:
+        print(f"⚠ Ошибка инициализации БД: {e}")
+        db_connector = None
+
+    print("=" * 60)
+    print("Сервер готов к работе!")
+    print("=" * 60)
+
+    yield  # ← Сервер работает, принимает запросы
+
+    # Остановка сервера
+    print("\nОстановка сервера...")
+    print("✓ Сервер остановлен")
+
+
+# ✅ ОДИН раз создаём приложение
+app = FastAPI(
+    title="Data Quality Check API",
+    description="API для анализа качества данных",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# ✅ Подключаем router из app/router.py
+app.include_router(router)
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "app" / "static"), name="static")
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )

@@ -12,3 +12,7 @@ scipy
 httpx==0.28.1
 fastapi==0.139.0
 uvicorn==0.51.0
+python-multipart==0.0.32
+fpdf2>=2.7.0
+matplotlib>=3.7.0
+reportlab==5.0.0

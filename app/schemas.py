@@ -149,3 +149,29 @@ class RecentFileResponse(BaseModel):
     uploaded_at: datetime
     size: int
     stats: Dict[str, Any]
+
+class CleaningAction(BaseModel):
+    action_type: str  # "remove_duplicates", "fill_missing", "remove_outliers"
+    description: str
+    column: Optional[str] = None
+    value: Optional[Any] = None
+    affected_rows: int
+    priority: str = "medium"
+
+
+class SmartRecommendation(BaseModel):
+    check_type: str
+    column: str
+    detected_type: str
+    issue: str
+    suggested_action: CleaningAction
+    confidence: float
+
+
+class SmartAnalysisReport(BaseModel):
+    total_rows: int
+    total_columns: int
+    detected_types: Dict[str, str]  # column -> type
+    recommendations: List[SmartRecommendation]
+    cleaning_actions: List[CleaningAction]
+    estimated_impact: str
