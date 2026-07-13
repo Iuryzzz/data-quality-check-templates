@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,8 +20,11 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
-from services.data_analyzer import DataQualityAnalyzer, TemplateValidator, load_data
-from web_storage import WebStorage
+from app.schemas import StartResponse, StartRequest, BatchAnalysisRequest, ReportResponse, StatusResponse, \
+    TemplateResponse, TemplateCreateRequest
+from data_analyzer import DataQualityAnalyzer, TemplateValidator, load_data
+from app.schemas import RecentFileResponse, FileFilter
+from service import WebStorage
 
 app = FastAPI()
 security = HTTPBasic()
@@ -43,70 +46,6 @@ templates: Dict[str, Dict[str, Any]] = {
         "rules": ["not_empty", "no_duplicates", "no_missing_values"],
     }
 }
-
-
-class FileFilter(str, Enum):
-    all = "all"
-    csv = "csv"
-    json = "json"
-    db = "db"
-
-
-class BatchAnalysisRequest(BaseModel):
-    file_ids: List[str] = Field(..., min_items=1, description="IDs of uploaded files")
-    template_id: Optional[str] = Field(default=None, description="Optional validation template")
-
-
-class TemplateCreateRequest(BaseModel):
-    name: str
-    description: Optional[str] = None
-    rules: List[str] = Field(default_factory=list)
-
-
-class ReportResponse(BaseModel):
-    task_id: str
-    file_id: str
-    template_id: Optional[str]
-    status: str
-    metrics: Dict[str, Any]
-    issues: List[Dict[str, Any]]
-    analysis: Optional[Dict[str, Any]] = None
-    validation: Optional[Dict[str, Any]] = None
-
-
-class StatusResponse(BaseModel):
-    task_id: str
-    status: str
-    created_at: datetime
-    updated_at: datetime
-
-
-class StartResponse(BaseModel):
-    task_id: str
-    file_id: str
-    started_at: datetime
-
-
-class StartRequest(BaseModel):
-    file_id: str
-    template_name: Optional[str] = Field(default='None', description="Optional validation template")
-
-
-class TemplateResponse(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-    rules: List[str]
-
-
-class RecentFileResponse(BaseModel):
-    id: str
-    filename: str
-    file_type: str
-    uploaded_at: datetime
-    size: int
-    stats: Dict[str, Any]
-
 
 # Банальная авторизация для всех защищенных эндпоинтов.
 def require_basic_auth(credentials: HTTPBasicCredentials = Depends(security)) -> None:

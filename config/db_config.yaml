@@ -1,0 +1,9 @@
+server_name: shared_team_db
+type_db: postgres
+host: ep-billowing-cloud-atkkynsq.c-9.us-east-1.aws.neon.tech
+port: 5432
+user: neondb_owner
+password: npg_JY4UCfjmk0oT
+database: neondb
+extra_params:
+  sslmode: require
