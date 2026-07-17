@@ -45,6 +45,11 @@ async def lifespan(app: FastAPI):
         print(f"⚠ Ошибка инициализации БД: {e}")
         db_connector = None
 
+    # ПРАВКА: кладём db_connector в app.state, чтобы эндпоинт
+    # /api/v1/data/connect-db в app/router.py мог им пользоваться
+    # (раньше эта заглушка вообще не была связана с реальным подключением).
+    app.state.db_connector = db_connector
+
     print("=" * 60)
     print("Сервер готов к работе!")
     print("=" * 60)

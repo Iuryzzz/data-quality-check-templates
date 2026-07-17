@@ -3,12 +3,16 @@ let pollingTimer = null;
 let templatesCache = [];
 let currentSmartTaskId = null;
 let smartActionsCache = [];
-let currentAnalysisTaskId = null;  // Для кнопки PDF
+let currentAnalysisTaskId = null;
+let chartInstances = {};
+let dbConnected = false;
+let currentReportData = null;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 function showStatus(el, message, type = 'info') {
+    if (!el) return;
     el.textContent = message;
     el.className = 'status show ' + type;
 }
@@ -32,8 +36,9 @@ function escapeHtml(s) {
 
 function renderTemplate(templateId, fillFn) {
     const tpl = document.getElementById(templateId);
+    if (!tpl) return document.createDocumentFragment();
     const clone = tpl.content.cloneNode(true);
-    fillFn(clone);
+    if (fillFn) fillFn(clone);
     return clone;
 }
 
@@ -48,21 +53,37 @@ async function api(path, options = {}) {
     return ct.includes('application/json') ? res.json() : res.text();
 }
 
+// === ОТОБРАЖЕНИЕ ИМЕНИ ФАЙЛА ===
+$('#file-input').addEventListener('change', function() {
+    const display = $('#file-name-display');
+    if (this.files && this.files.length > 0) {
+        display.textContent = this.files[0].name;
+        display.classList.add('has-file');
+    } else {
+        display.textContent = 'Файл не выбран';
+        display.classList.remove('has-file');
+    }
+});
+
 // === ВКЛАДКИ ===
+function switchTab(tabName) {
+    $$('.tab').forEach(b => b.classList.remove('active'));
+    $$('.tab-content').forEach(c => c.classList.remove('active'));
+    
+    const btn = document.querySelector('[data-tab="' + tabName + '"]');
+    const content = document.getElementById('tab-' + tabName);
+    
+    if (btn) btn.classList.add('active');
+    if (content) content.classList.add('active');
+    
+    if (tabName === 'files') loadFiles();
+    if (tabName === 'smart') loadFilesForSmart();
+    if (tabName === 'analysis') loadAnalysisTasks(); // ← НОВОЕ: загружаем задачи при открытии вкладки
+    if (tabName === 'templates') { loadTemplates(); loadAvailableChecks(); refreshTemplateSelects(); }
+}
+
 $$('.tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-        $$('.tab').forEach(b => b.classList.remove('active'));
-        $$('.tab-content').forEach(c => c.classList.remove('active'));
-        btn.classList.add('active');
-        $('#tab-' + btn.dataset.tab).classList.add('active');
-        if (btn.dataset.tab === 'files') loadFiles();
-        if (btn.dataset.tab === 'smart') loadFilesForSmart();
-        if (btn.dataset.tab === 'templates') {
-            loadTemplates();
-            loadAvailableChecks();
-            refreshTemplateSelects();
-        }
-    });
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
 // === ШАБЛОНЫ (КЭШ) ===
@@ -100,8 +121,10 @@ $('#upload-form').addEventListener('submit', async (e) => {
         });
         showStatus(status, `Готово. Task ID: ${analysisRes.task_id}`, 'success');
         fileInput.value = '';
+        $('#file-name-display').textContent = 'Файл не выбран';
+        $('#file-name-display').classList.remove('has-file');
         setTimeout(() => {
-            $('[data-tab="analysis"]').click();
+            switchTab('analysis');
             loadReport(analysisRes.task_id);
         }, 500);
     } catch (err) {
@@ -169,12 +192,12 @@ $('#files-list').addEventListener('click', async (e) => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ file_id: fileId, template_name: templateName || null })
             });
-            $('[data-tab="analysis"]').click();
+            switchTab('analysis');
             loadReport(res.task_id);
         } catch (err) { alert('Ошибка: ' + err.message); }
     } else if (e.target.classList.contains('smart-btn')) {
         const fileId = e.target.dataset.fileId;
-        $('[data-tab="smart"]').click();
+        switchTab('smart');
         setTimeout(() => {
             $('#smart-file-select').value = fileId;
             $('#run-smart-btn').click();
@@ -184,6 +207,86 @@ $('#files-list').addEventListener('click', async (e) => {
 
 $('#refresh-files').addEventListener('click', loadFiles);
 $('#filter-type').addEventListener('change', loadFiles);
+
+// === ПОДКЛЮЧЕНИЕ К БД ===
+$('#connect-db-btn').addEventListener('click', () => switchTab('database'));
+
+$('#db-connect-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const status = $('#db-status');
+    const card = $('#db-tables-card');
+    
+    const config = {
+        server_name: $('#db-server').value.trim(),
+        type_db: $('#db-type').value,
+        host: $('#db-host').value.trim(),
+        port: parseInt($('#db-port').value),
+        user: $('#db-user').value.trim(),
+        password: $('#db-password').value.trim(),
+        database: $('#db-database').value.trim(),
+        extra_params: { sslmode: 'require' }
+    };
+    
+    showStatus(status, 'Подключение...', 'info');
+    try {
+        const res = await api('/api/v1/data/connect-db', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+        showStatus(status, `✓ Подключено к ${res.server_name} (${res.type_db})`, 'success');
+        dbConnected = true;
+        card.style.display = '';
+        renderDbTables(res.tables);
+    } catch (err) {
+        showStatus(status, 'Ошибка: ' + err.message, 'error');
+        card.style.display = 'none';
+    }
+});
+
+function renderDbTables(tables) {
+    const list = $('#db-tables-list');
+    list.innerHTML = '';
+    if (!tables || tables.length === 0) {
+        list.innerHTML = '<p class="hint">Таблиц не найдено.</p>';
+        return;
+    }
+    tables.forEach(table => {
+        const node = renderTemplate('tpl-db-table', (clone) => {
+            clone.querySelector('.name').textContent = table;
+            clone.querySelector('.analyze-db-btn').dataset.table = table;
+        });
+        list.appendChild(node);
+    });
+}
+
+// === АНАЛИЗ ТАБЛИЦ ИЗ БД ===
+$('#db-tables-list').addEventListener('click', async (e) => {
+    if (e.target.classList.contains('analyze-db-btn')) {
+        const tableName = e.target.dataset.table;
+        const btn = e.target;
+        btn.textContent = 'Загрузка...';
+        btn.disabled = true;
+        
+        try {
+            const result = await api(`/api/v1/data/db-table/${encodeURIComponent(tableName)}`, {
+                method: 'POST'
+            });
+            const analysisRes = await api('/api/v1/analysis/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_id: result.file_id, template_name: null })
+            });
+            switchTab('analysis');
+            loadReport(analysisRes.task_id);
+        } catch (err) {
+            alert('Ошибка анализа: ' + err.message);
+        } finally {
+            btn.textContent = 'Анализировать →';
+            btn.disabled = false;
+        }
+    }
+});
 
 // === УМНЫЙ АНАЛИЗ ===
 async function loadFilesForSmart() {
@@ -292,19 +395,126 @@ async function applyCleaning(actions) {
     } catch (err) { alert('Ошибка: ' + err.message); }
 }
 
-// === ОТЧЁТЫ ===
-$('#load-task-btn').addEventListener('click', () => {
-    const id = $('#task-id-input').value.trim();
-    if (id) loadReport(id);
-});
+// === ОТЧЁТЫ - ЗАГРУЗКА СПИСКА ЗАДАЧ ===
+async function loadAnalysisTasks() {
+    const container = $('#analysis-empty');
+    const listContainer = $('#analysis-tasks-list');
+    
+    try {
+        // Получаем список недавних файлов
+        const files = await api('/api/v1/data/recent?file_type=all&limit=20');
+        
+        if (!files || files.length === 0) {
+            container.innerHTML = `
+                <p class="hint">Нет выполненных анализов.</p>
+                <p class="hint" style="margin-top:8px;">Загрузите файл на вкладке "Загрузка" или "Файлы".</p>
+            `;
+            return;
+        }
+        
+        // Получаем задачи для каждого файла
+        let tasksHtml = '<div class="list">';
+        let hasTasks = false;
+        
+        for (const file of files) {
+            try {
+                // Пытаемся получить задачу по file_id
+                const task = await api(`/api/v1/analysis/task-by-file/${file.id}`);
+                if (task && task.task_id) {
+                    hasTasks = true;
+                    const statusColor = task.status === 'done' ? '#B8FF3C' : '#FFD23F';
+                    tasksHtml += `
+                        <div class="list-item" style="cursor:pointer;" data-task-id="${task.task_id}">
+                            <div class="item-main">
+                                <div class="name">${escapeHtml(file.filename)}</div>
+                                <div class="meta">
+                                    <span style="color:${statusColor};">${task.status.toUpperCase()}</span>
+                                    &nbsp;·&nbsp; ${formatDate(task.created_at)}
+                                    ${task.template_id ? `&nbsp;·&nbsp; Шаблон: ${escapeHtml(task.template_id)}` : ''}
+                                </div>
+                            </div>
+                            <div class="item-actions">
+                                <button class="btn load-task-btn" data-task-id="${task.task_id}">Загрузить отчёт →</button>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (e) {
+                // Если задачи нет, пропускаем
+                continue;
+            }
+        }
+        
+        tasksHtml += '</div>';
+        
+        if (!hasTasks) {
+            container.innerHTML = `
+                <p class="hint">Нет выполненных анализов.</p>
+                <p class="hint" style="margin-top:8px;">Загрузите файл на вкладке "Загрузка" или "Файлы".</p>
+            `;
+        } else {
+            container.innerHTML = `
+                <p class="hint">Последние выполненные анализы:</p>
+                ${tasksHtml}
+                <div class="inline-form" style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">
+                    <input type="text" id="task-id-input" placeholder="Введите ID задачи">
+                    <button id="load-task-btn" class="btn">Загрузить по ID</button>
+                </div>
+            `;
+            
+            // Обработчики для кнопок "Загрузить отчёт"
+            container.querySelectorAll('.load-task-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const taskId = btn.dataset.taskId;
+                    loadReport(taskId);
+                });
+            });
+            
+            // Обработчик для клика по строке
+            container.querySelectorAll('.list-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const taskId = item.dataset.taskId;
+                    if (taskId) loadReport(taskId);
+                });
+            });
+            
+            // Обработчик для кнопки "Загрузить по ID"
+            const loadBtn = container.querySelector('#load-task-btn');
+            if (loadBtn) {
+                loadBtn.addEventListener('click', () => {
+                    const input = container.querySelector('#task-id-input');
+                    if (input && input.value.trim()) {
+                        loadReport(input.value.trim());
+                    }
+                });
+            }
+        }
+    } catch (err) {
+        container.innerHTML = `
+            <p class="hint">Ошибка загрузки списка: ${err.message}</p>
+            <div class="inline-form" style="margin-top:16px;">
+                <input type="text" id="task-id-input" placeholder="Введите ID задачи">
+                <button id="load-task-btn" class="btn">Загрузить по ID</button>
+            </div>
+        `;
+        const loadBtn = container.querySelector('#load-task-btn');
+        if (loadBtn) {
+            loadBtn.addEventListener('click', () => {
+                const input = container.querySelector('#task-id-input');
+                if (input && input.value.trim()) {
+                    loadReport(input.value.trim());
+                }
+            });
+        }
+    }
+}
 
+// === ЗАГРУЗКА ОТЧЁТА ===
 async function loadReport(taskId) {
     currentAnalysisTaskId = taskId;
     $('#analysis-empty').classList.add('hidden');
     $('#analysis-result').classList.remove('hidden');
     $('#metrics-grid').innerHTML = '<p class="hint">Загрузка...</p>';
-
-    // Обновляем ссылку на PDF
     $('#download-pdf-btn').href = `/api/v1/analysis/report/${taskId}/pdf`;
 
     try {
@@ -315,9 +525,14 @@ async function loadReport(taskId) {
             return;
         }
         const report = await api(`/api/v1/analysis/report/${taskId}`);
+        currentReportData = report;
         renderReport(report);
     } catch (err) {
         $('#metrics-grid').innerHTML = `<div class="status show error">Ошибка: ${err.message}</div>`;
+        // Показываем кнопку возврата
+        $('#analysis-empty').classList.remove('hidden');
+        $('#analysis-result').classList.add('hidden');
+        loadAnalysisTasks();
     }
 }
 
@@ -329,6 +544,7 @@ function startPolling(taskId) {
             if (status.status === 'done' || status.status === 'failed') {
                 stopPolling();
                 const report = await api(`/api/v1/analysis/report/${taskId}`);
+                currentReportData = report;
                 renderReport(report);
             }
         } catch (err) {
@@ -339,9 +555,164 @@ function startPolling(taskId) {
 }
 function stopPolling() { if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null; } }
 
+// === ГРАФИКИ ===
+function renderChart(canvasId, config) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    if (chartInstances[canvasId]) {
+        chartInstances[canvasId].destroy();
+    }
+    try {
+        chartInstances[canvasId] = new Chart(canvas.getContext('2d'), config);
+    } catch (e) {
+        console.warn('Chart error:', canvasId, e.message);
+    }
+}
+
+const CHART_COLORS = ['#00F5D4', '#B8FF3C', '#FF2E9A', '#B026FF', '#FFD23F', '#FF6B35', '#7DF9FF', '#FF5E7E', '#4FC3F7', '#FF8A65'];
+
+function renderCharts(analysis, validation) {
+    if (typeof Chart === 'undefined') {
+        console.warn('Chart.js not loaded');
+        return;
+    }
+    
+    Chart.defaults.color = '#8892b0';
+    Chart.defaults.font.family = "-apple-system, sans-serif";
+    Chart.defaults.font.size = 11;
+    
+    const colDetails = analysis.missing_details || [];
+    
+    // 1. Типы колонок
+    const typeCounts = {};
+    colDetails.forEach(c => {
+        const t = c.data_type || 'unknown';
+        typeCounts[t] = (typeCounts[t] || 0) + 1;
+    });
+    const typeLabels = Object.keys(typeCounts);
+    const typeColors = CHART_COLORS.slice(0, typeLabels.length);
+    
+    renderChart('chart-types', {
+        type: 'doughnut',
+        data: {
+            labels: typeLabels,
+            datasets: [{ 
+                data: Object.values(typeCounts), 
+                backgroundColor: typeColors.map(c => c + 'CC'),
+                borderColor: typeColors,
+                borderWidth: 2
+            }]
+        },
+        options: { 
+            responsive: true, 
+            maintainAspectRatio: false, 
+            cutout: '55%',
+            plugins: { 
+                title: { display: true, text: `Типы колонок (${colDetails.length} колонок)`, color: '#e8ecf8', font: { size: 13, weight: '600' } },
+                legend: { position: 'bottom', labels: { color: '#c8cee0', padding: 10, boxWidth: 12 } } 
+            } 
+        }
+    });
+
+    // 2. Пропуски
+    const missingSorted = [...colDetails].filter(c => c.null_count > 0)
+        .sort((a, b) => b.null_count - a.null_count);
+    const missingColors = missingSorted.map((_, i) => CHART_COLORS[(i + 2) % CHART_COLORS.length]);
+    
+    renderChart('chart-missing', {
+        type: 'bar',
+        data: {
+            labels: missingSorted.map(c => c.name),
+            datasets: [{ 
+                label: 'Пропусков', 
+                data: missingSorted.map(c => c.null_count), 
+                backgroundColor: missingColors.map(c => c + 'BB'),
+                borderColor: missingColors,
+                borderWidth: 1.5,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: { display: true, text: `Пропуски по колонкам (${missingSorted.length} колонок с пропусками)`, color: '#e8ecf8', font: { size: 13, weight: '600' } },
+                legend: { display: false }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8892b0', maxRotation: 45 } },
+                y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8892b0' } }
+            }
+        }
+    });
+
+    // 3. Выбросы
+    const outliers = (analysis.outlier_details || []);
+    const outlierColors = outliers.map((_, i) => CHART_COLORS[(i + 4) % CHART_COLORS.length]);
+    
+    renderChart('chart-outliers', {
+        type: 'bar',
+        data: {
+            labels: outliers.map(o => o.column),
+            datasets: [{ 
+                label: 'Выбросов', 
+                data: outliers.map(o => o.count), 
+                backgroundColor: outlierColors.map(c => c + 'BB'),
+                borderColor: outlierColors,
+                borderWidth: 1.5,
+                borderRadius: 4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                title: { display: true, text: `Выбросы по колонкам (${outliers.length} колонок с выбросами)`, color: '#e8ecf8', font: { size: 13, weight: '600' } },
+                legend: { display: false }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8892b0', maxRotation: 45 } },
+                y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8892b0' } }
+            }
+        }
+    });
+
+    // 4. Валидация
+    const hasValidation = validation && (validation.passed || validation.failed || validation.warnings);
+    const valData = hasValidation ? [validation.passed, validation.failed, validation.warnings] : [1, 0, 0];
+    renderChart('chart-validation', {
+        type: 'doughnut',
+        data: {
+            labels: ['Пройдено', 'Ошибок', 'Предупреждений'],
+            datasets: [{ 
+                data: valData, 
+                backgroundColor: ['#B8FF3CCC', '#FF2E9ACC', '#FFD23FCC'],
+                borderColor: ['#B8FF3C', '#FF2E9A', '#FFD23F'],
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '55%',
+            plugins: {
+                title: { 
+                    display: true, 
+                    text: hasValidation ? `Результаты валидации (${validation.total_checks || 0} проверок)` : 'Валидация не проводилась', 
+                    color: '#e8ecf8', 
+                    font: { size: 13, weight: '600' } 
+                },
+                legend: { position: 'bottom', labels: { color: '#c8cee0', padding: 10, boxWidth: 12 } }
+            }
+        }
+    });
+}
+
 function renderReport(report) {
     const analysis = report.analysis || {};
     const validation = report.validation;
+
+    setTimeout(() => renderCharts(analysis, validation), 300);
 
     const metricsGrid = $('#metrics-grid');
     metricsGrid.innerHTML = '';
@@ -438,9 +809,9 @@ function renderReport(report) {
         vCard.style.display = '';
         $('#validation-summary').innerHTML = `
             <span>Шаблон: <b>${escapeHtml(validation.template_name)}</b></span>
-            <span>Пройдено: <b style="color:var(--success)">${validation.passed}</b></span>
-            <span>Ошибок: <b style="color:var(--danger)">${validation.failed}</b></span>
-            <span>Предупреждений: <b style="color:var(--warning)">${validation.warnings}</b></span>`;
+            <span>Пройдено: <b style="color:#B8FF3C">${validation.passed}</b></span>
+            <span>Ошибок: <b style="color:#FF2E9A">${validation.failed}</b></span>
+            <span>Предупреждений: <b style="color:#FFD23F">${validation.warnings}</b></span>`;
         const vTbody = $('#validation-tbody');
         vTbody.innerHTML = '';
         validation.results.forEach(r => {

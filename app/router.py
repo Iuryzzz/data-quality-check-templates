@@ -1,3 +1,5 @@
+# app/router.py - исправленная версия
+
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +15,7 @@ import tempfile
 from fastapi import BackgroundTasks
 import httpx
 import pandas as pd
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile, Request
 from fastapi.openapi.models import Response
 from fastapi.responses import FileResponse
 from fastapi.encoders import jsonable_encoder
@@ -26,9 +28,12 @@ from .schemas import (
 )
 from .data_analyzer import DataQualityAnalyzer, TemplateValidator, load_data
 from .service import WebStorage
+from config.db_config import DBConnectionConfig
+from .db_connector import DBConnectorService, BatchDispatcher
 
-
+# ✅ СОЗДАЁМ ROUTER ЗДЕСЬ
 router = APIRouter()
+
 BASE_DIR = Path(__file__).resolve().parent
 web_storage = WebStorage(BASE_DIR / "web_storage.sqlite3")
 
@@ -36,7 +41,6 @@ TEMPLATES_DIR = BASE_DIR / "checks" / "templates"
 CHECKS_DIR = BASE_DIR / "checks"
 TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 CHECKS_DIR.mkdir(parents=True, exist_ok=True)
-
 
 
 def _model_to_dict(model: Any) -> Any:
@@ -66,7 +70,6 @@ def _save_json_file(path: Path, data: Dict) -> None:
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
-
 
 
 def _list_templates() -> List[Dict[str, str]]:
@@ -270,7 +273,6 @@ def _parse_uploaded_content(filename: str, content: bytes, template_name: Option
     }
 
 
-
 @router.post("/api/v1/data/upload")
 async def upload_data(file: UploadFile = File(...)):
     """Загрузка файла"""
@@ -318,7 +320,6 @@ def get_recent_files(file_type: FileFilter = FileFilter.all, limit: int = 20):
 @router.get("/api/v1/data/stats/recent")
 def get_recent_files_stats():
     return web_storage.recent_stats()
-
 
 
 @router.post("/api/v1/analysis/start", response_model=StartResponse)
@@ -515,11 +516,102 @@ def delete_template(template_name: str):
     return {"status": "deleted", "name": template_name}
 
 
-
 @router.post("/api/v1/data/connect-db")
-def connect_database():
-    return {"status": "connected", "tables": []}
+def connect_database(payload: Optional[DBConnectionConfig] = None, request: Request = None):
+    """
+    Подключение к БД.
+    """
+    if payload is not None:
+        service = DBConnectorService(payload)
+        try:
+            if not service.test_connection():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Не удалось подключиться к БД. Проверьте параметры подключения."
+                )
+            tables = service.list_tables()
+        finally:
+            service.close()
 
+        return {
+            "status": "connected",
+            "server_name": payload.server_name,
+            "type_db": payload.type_db,
+            "tables": tables,
+        }
+
+    db_connector = getattr(request.app.state, "db_connector", None) if request else None
+    if db_connector is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Общая БД не подключена. Проверьте config/db_config.yaml "
+                "или передайте параметры подключения в теле запроса."
+            )
+        )
+    if not db_connector.test_connection():
+        raise HTTPException(status_code=503, detail="Подключение к общей БД потеряно.")
+
+    return {
+        "status": "connected",
+        "server_name": db_connector.config.server_name,
+        "type_db": db_connector.config.type_db,
+        "tables": db_connector.list_tables(),
+    }
+
+
+@router.post("/api/v1/data/db-table/{table_name}")
+def analyze_db_table(table_name: str, request: Request):
+    """Загружает таблицу из БД и возвращает file_id для анализа"""
+    db_connector = getattr(request.app.state, "db_connector", None)
+    if db_connector is None:
+        raise HTTPException(status_code=503, detail="БД не подключена")
+    
+    if not db_connector.test_connection():
+        raise HTTPException(status_code=503, detail="Потеряно соединение с БД")
+    
+    engine = db_connector.get_engine()
+    dispatcher = BatchDispatcher()
+    
+    try:
+        tables = db_connector.list_tables()
+        if table_name not in tables:
+            raise HTTPException(status_code=404, detail=f"Таблица '{table_name}' не найдена")
+        
+        batches = dispatcher.load_table_batches(engine, table_name)
+        df = BatchDispatcher.merge_batches(batches)
+        
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"Таблица '{table_name}' пуста")
+        
+        file_id = str(uuid4())
+        task_id = str(uuid4())
+        content = df.to_csv(index=False).encode('utf-8')
+        
+        web_storage.save_upload({
+            "file_id": file_id,
+            "task_id": task_id,
+            "filename": f"{table_name}.csv",
+            "file_type": "csv",
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "size": len(content),
+            "content": content,
+            "schema": None,
+            "stats": {
+                "rows": len(df),
+                "columns": len(df.columns),
+                "duplicates": int(df.duplicated().sum()),
+                "missing_values": int(df.isnull().sum().sum()),
+                "inconsistencies": 0,
+            },
+        })
+        
+        return {"file_id": file_id, "task_id": task_id, "rows": len(df), "columns": len(df.columns)}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка загрузки таблицы: {str(e)}")
 
 
 @router.get("/")
@@ -665,3 +757,17 @@ def download_pdf_report(task_id: str):
             "Content-Disposition": f'attachment; filename="{pdf_filename}"'
         }
     )
+@router.get("/api/v1/analysis/task-by-file/{file_id}")
+def get_task_by_file(file_id: str):
+    """Получить задачу по file_id"""
+    task = web_storage.get_task_by_file(file_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found for this file")
+    return {
+        "task_id": task["task_id"],
+        "file_id": task["file_id"],
+        "template_id": task.get("template_id"),
+        "status": task["status"],
+        "created_at": task["created_at"],
+        "updated_at": task["updated_at"],
+    }
